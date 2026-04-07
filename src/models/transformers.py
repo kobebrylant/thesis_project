@@ -8,8 +8,28 @@ from torch.utils.data import Dataset
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
 from transformers import EarlyStoppingCallback
 
+from torch import nn
+from transformers import Trainer as HFTrainer
+
 from .base import BaseModel, ModelMetrics
 from ..config import TRANSFORMER_PATHS, TrainingConfig, DeviceConfig
+
+
+class WeightedTrainer(HFTrainer):
+    """Trainer subclass that applies class weights to the cross-entropy loss."""
+
+    def __init__(self, class_weights: torch.Tensor, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.class_weights = class_weights
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.pop("labels")
+        outputs = model(**inputs)
+        logits = outputs.logits
+        loss = nn.CrossEntropyLoss(weight=self.class_weights.to(logits.device))(
+            logits, labels
+        )
+        return (loss, outputs) if return_outputs else loss
 
 
 class ReviewDataset(Dataset):
@@ -76,7 +96,7 @@ class TransformerModel(BaseModel):
         X_val: np.ndarray,
         y_val: np.ndarray,
     ) -> ModelMetrics:
-        from transformers import TrainingArguments, Trainer
+        from transformers import TrainingArguments
         from datasets import Dataset as HFDataset
 
         self._load_model_and_tokenizer()
@@ -105,6 +125,14 @@ class TransformerModel(BaseModel):
             "labels": list(y_val),
         })
 
+        n_neg = int((y_train == 0).sum())
+        n_pos = int((y_train == 1).sum())
+        total = n_neg + n_pos
+        class_weights = torch.tensor(
+            [total / (2 * n_neg), total / (2 * n_pos)],
+            dtype=torch.float32,
+        )
+
         training_args = TrainingArguments(
             output_dir=f"./tmp_trainer_{self.name}_{self.seed}",
             num_train_epochs=self.config["epochs"],
@@ -125,7 +153,8 @@ class TransformerModel(BaseModel):
             use_mps_device=(self.device.type == "mps"),
         )
 
-        trainer = Trainer(
+        trainer = WeightedTrainer(
+            class_weights=class_weights,
             model=self._model,
             args=training_args,
             train_dataset=train_dataset,

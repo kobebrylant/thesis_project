@@ -109,6 +109,19 @@ def build_sentiment_features(
         ).abs()
         feature_cols.append("sentiment_confidence")
 
+    # Text-based features
+    if "ea_sentiment_std" in merged.columns:
+        feature_cols.append("ea_sentiment_std")
+
+    if "ea_mean_review_length" in merged.columns:
+        feature_cols.append("ea_mean_review_length")
+
+    if "ea_long_review_ratio" in merged.columns:
+        feature_cols.append("ea_long_review_ratio")
+
+    if "ea_neg_pos_length_ratio" in merged.columns:
+        feature_cols.append("ea_neg_pos_length_ratio")
+
     merged["feature_cols"] = [feature_cols] * len(merged)
 
     return merged

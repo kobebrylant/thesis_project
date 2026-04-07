@@ -1,0 +1,42 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- IDE / tooling ---
+.vscode/
+.idea/
+.claude/
+*.swp
+
+# --- Data (regenerable via data_gatherer.py / data_pipeline.py) ---
+data/
+!data/.gitkeep
+
+# --- Training artifacts ---
+results/checkpoints/
+results/models/
+results/figures/
+results/metrics/
+results/.DS_Store
+
+# --- Scratch / backups ---
+results copy/
+test_data_verification/
+test_utils/test_data_verification/
+
+# --- Secrets ---
+.env
+*.key

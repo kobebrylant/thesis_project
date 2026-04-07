@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import joblib
+import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr, pearsonr
 from tqdm import tqdm
@@ -206,11 +207,34 @@ class ThesisValidator:
             if hasattr(model, "predict_proba"):
                 proba = model.predict_proba(X_tfidf)
                 avg_positive_prob = proba[:, 1].mean()
+                positive_probs = proba[:, 1]
             else:
                 avg_positive_prob = predictions.mean()
+                positive_probs = predictions.astype(float)
 
             positive_ratio = predictions.mean()
             total_reviews = len(game_reviews)
+
+            # --- Text-based features ---
+            raw_texts = game_reviews["review_text"].values
+            word_counts = np.array([len(str(t).split()) for t in raw_texts])
+            mean_review_length = word_counts.mean()
+            std_review_length = word_counts.std()
+            long_review_ratio = (word_counts > 50).mean()
+
+            # Sentiment variance (controversy signal)
+            sentiment_std = positive_probs.std()
+
+            # Negative vs positive review length
+            pos_mask = predictions == 1
+            neg_mask = predictions == 0
+            mean_pos_length = word_counts[pos_mask].mean() if pos_mask.any() else 0.0
+            mean_neg_length = word_counts[neg_mask].mean() if neg_mask.any() else 0.0
+            neg_pos_length_ratio = (
+                mean_neg_length / mean_pos_length
+                if mean_pos_length > 0
+                else 0.0
+            )
 
             pr_reviews = df[
                 (df[game_col] == game) & (df["review_type"] == "post_release")
@@ -223,10 +247,18 @@ class ThesisValidator:
             game_scores.append(
                 {
                     "game_name": game,
+                    "app_id": game_reviews["app_id"].iloc[0],
                     "ea_review_count": total_reviews,
                     "ea_predicted_positive_ratio": positive_ratio,
                     "ea_avg_positive_probability": avg_positive_prob,
                     "ea_actual_positive_ratio": game_reviews["positive"].mean(),
+                    "ea_sentiment_std": sentiment_std,
+                    "ea_mean_review_length": mean_review_length,
+                    "ea_std_review_length": std_review_length,
+                    "ea_long_review_ratio": long_review_ratio,
+                    "ea_mean_pos_review_length": mean_pos_length,
+                    "ea_mean_neg_review_length": mean_neg_length,
+                    "ea_neg_pos_length_ratio": neg_pos_length_ratio,
                     "pr_review_count": pr_review_count,
                     "pr_actual_positive_ratio": pr_positive_ratio,
                 }
@@ -370,51 +402,74 @@ class ThesisValidator:
 
         print(f"\nMatched {len(merged)} games between sentiment and success metrics")
 
+        if "steamspy_owners_min" in merged.columns and "steamspy_owners_max" in merged.columns:
+            merged["owners_midpoint"] = (
+                merged["steamspy_owners_min"] + merged["steamspy_owners_max"]
+            ) / 2
+
         if len(merged) < 5:
             print("WARNING: Not enough matched games for reliable analysis!")
             return {}
 
         results = {}
 
-        metrics_config = [
-            ("owners_midpoint", "Estimated Sales"),
+        success_metrics_config = [
+            ("owners_midpoint", "Estimated Sales (Owners)"),
+            ("steamspy_owners_min", "Owner Estimate (Min)"),
             ("steam_metacritic_score", "Metacritic Score"),
             ("steamspy_avg_playtime", "Average Playtime"),
             ("review_score", "Review Score (Positive Ratio)"),
+            ("estimated_revenue_usd", "Estimated Revenue"),
         ]
 
-        ea_sentiment = merged["ea_predicted_positive_ratio"]
+        sentiment_features = [
+            ("ea_predicted_positive_ratio", "Predicted Sentiment"),
+            ("ea_sentiment_std", "Sentiment Variance"),
+            ("ea_mean_review_length", "Mean Review Length"),
+            ("ea_long_review_ratio", "Long Review Ratio"),
+            ("ea_neg_pos_length_ratio", "Neg/Pos Length Ratio"),
+            ("log_ea_review_count", "Log Review Count"),
+        ]
 
-        for metric_col, metric_name in metrics_config:
+        # Compute derived columns for correlation
+        if "ea_review_count" in merged.columns:
+            merged["log_ea_review_count"] = np.log1p(merged["ea_review_count"])
+
+        for metric_col, metric_name in success_metrics_config:
             if metric_col not in merged.columns:
                 print(f"  Skipping {metric_name}: column not found")
                 continue
 
-            valid_mask = pd.notna(merged[metric_col]) & pd.notna(ea_sentiment)
-            n_valid = valid_mask.sum()
+            for feat_col, feat_name in sentiment_features:
+                if feat_col not in merged.columns:
+                    continue
 
-            if n_valid < 5:
-                print(f"  Skipping {metric_name}: only {n_valid} valid samples")
-                continue
+                valid_mask = pd.notna(merged[metric_col]) & pd.notna(merged[feat_col])
+                n_valid = valid_mask.sum()
 
-            x = ea_sentiment[valid_mask].values
-            y = merged[metric_col][valid_mask].values
+                if n_valid < 5:
+                    continue
 
-            spearman_r, spearman_p = spearmanr(x, y)
-            pearson_r, pearson_p = pearsonr(x, y)
+                x = merged[feat_col][valid_mask].values
+                y = merged[metric_col][valid_mask].values
 
-            result = CorrelationResult(
-                spearman_r=spearman_r,
-                spearman_p=spearman_p,
-                pearson_r=pearson_r,
-                pearson_p=pearson_p,
-                n_samples=n_valid,
-            )
-            results[metric_name] = result
+                spearman_r, spearman_p = spearmanr(x, y)
+                pearson_r, pearson_p = pearsonr(x, y)
 
-            print(
-                f"  {metric_name}: r={spearman_r:.3f}, p={spearman_p:.4f}, n={n_valid}"
-            )
+                result = CorrelationResult(
+                    spearman_r=spearman_r,
+                    spearman_p=spearman_p,
+                    pearson_r=pearson_r,
+                    pearson_p=pearson_p,
+                    n_samples=n_valid,
+                )
+                key = f"{feat_name} → {metric_name}"
+                results[key] = result
+
+                sig = "***" if spearman_p < 0.05 else ""
+                print(
+                    f"  {key}: r={spearman_r:.3f}, p={spearman_p:.4f}, n={n_valid} {sig}"
+                )
 
         return results
 

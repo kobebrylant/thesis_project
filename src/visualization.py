@@ -1193,6 +1193,177 @@ class Visualizer:
         plt.close()
         print(f"Saved: {save_path}")
 
+    def plot_feature_metric_grid(
+        self,
+        game_sentiment: pd.DataFrame,
+        success_metrics: pd.DataFrame,
+    ) -> None:
+        """Render the full sentiment-feature x success-metric correlation heatmap.
+
+        Each cell shows Spearman r between one EA-derived sentiment feature
+        (rows) and one commercial-success metric (columns). Cells are
+        annotated with r and a significance marker (* p<0.05, ** p<0.01,
+        *** p<0.001). This is the visual analogue of the correlation table
+        printed by ``correlate_with_success_metrics``.
+        """
+        from scipy.stats import spearmanr
+
+        if "app_id" in game_sentiment.columns:
+            merged = game_sentiment.merge(
+                success_metrics, on="app_id", how="inner", suffixes=("", "_metrics")
+            )
+        else:
+            game_sentiment = game_sentiment.copy()
+            success_metrics = success_metrics.copy()
+            game_sentiment["name_normalized"] = (
+                game_sentiment["game_name"].str.lower().str.strip()
+            )
+            success_metrics["name_normalized"] = (
+                success_metrics["app_name"].str.lower().str.strip()
+            )
+            merged = game_sentiment.merge(
+                success_metrics,
+                on="name_normalized",
+                how="inner",
+                suffixes=("", "_metrics"),
+            )
+
+        if len(merged) < 5:
+            print("Not enough matched games for feature-metric grid")
+            return
+
+        # Derive convenience columns to match correlate_with_success_metrics
+        if "owners_midpoint" not in merged.columns and (
+            "steamspy_owners_min" in merged.columns
+            and "steamspy_owners_max" in merged.columns
+        ):
+            merged["owners_midpoint"] = (
+                merged["steamspy_owners_min"] + merged["steamspy_owners_max"]
+            ) / 2
+
+        if "review_score" not in merged.columns and (
+            "steamspy_positive" in merged.columns
+            and "steamspy_negative" in merged.columns
+        ):
+            merged["review_score"] = merged["steamspy_positive"] / (
+                merged["steamspy_positive"] + merged["steamspy_negative"]
+            )
+
+        if "ea_review_count" in merged.columns:
+            merged["log_ea_review_count"] = np.log1p(merged["ea_review_count"])
+
+        sentiment_features = [
+            ("ea_predicted_positive_ratio", "Predicted Sentiment"),
+            ("ea_sentiment_std", "Sentiment Variance"),
+            ("ea_mean_review_length", "Mean Review Length"),
+            ("ea_long_review_ratio", "Long Review Ratio"),
+            ("ea_neg_pos_length_ratio", "Neg/Pos Length Ratio"),
+            ("log_ea_review_count", "Log Review Count"),
+        ]
+
+        success_metrics_config = [
+            ("owners_midpoint", "Estimated Sales\n(Owners)"),
+            ("estimated_revenue_usd", "Estimated\nRevenue"),
+            ("review_score", "Post-Release\nReview Score"),
+            ("steam_metacritic_score", "Metacritic\nScore"),
+            ("steamspy_avg_playtime", "Average\nPlaytime"),
+            ("pr_actual_positive_ratio", "Post-Release\nSentiment"),
+        ]
+
+        feat_rows = [(c, n) for c, n in sentiment_features if c in merged.columns]
+        metric_cols = [(c, n) for c, n in success_metrics_config if c in merged.columns]
+
+        if not feat_rows or not metric_cols:
+            print("No sentiment features or success metrics available for grid")
+            return
+
+        n_rows = len(feat_rows)
+        n_cols = len(metric_cols)
+        r_grid = np.full((n_rows, n_cols), np.nan)
+        p_grid = np.full((n_rows, n_cols), np.nan)
+        n_grid = np.zeros((n_rows, n_cols), dtype=int)
+
+        for i, (fcol, _) in enumerate(feat_rows):
+            for j, (mcol, _) in enumerate(metric_cols):
+                valid = pd.notna(merged[fcol]) & pd.notna(merged[mcol])
+                if valid.sum() < 5:
+                    continue
+                r, p = spearmanr(merged[fcol][valid], merged[mcol][valid])
+                r_grid[i, j] = r
+                p_grid[i, j] = p
+                n_grid[i, j] = valid.sum()
+
+        def _stars(p: float) -> str:
+            if np.isnan(p):
+                return ""
+            if p < 0.001:
+                return "***"
+            if p < 0.01:
+                return "**"
+            if p < 0.05:
+                return "*"
+            return ""
+
+        annot = np.empty_like(r_grid, dtype=object)
+        for i in range(n_rows):
+            for j in range(n_cols):
+                if np.isnan(r_grid[i, j]):
+                    annot[i, j] = "n/a"
+                else:
+                    annot[i, j] = f"{r_grid[i, j]:.2f}{_stars(p_grid[i, j])}"
+
+        corr_df = pd.DataFrame(
+            r_grid,
+            index=[n for _, n in feat_rows],
+            columns=[n for _, n in metric_cols],
+        )
+
+        fig, ax = plt.subplots(figsize=(max(10, 1.6 * n_cols), max(6, 0.9 * n_rows)))
+
+        sns.heatmap(
+            corr_df,
+            annot=annot,
+            fmt="",
+            cmap="RdBu_r",
+            center=0,
+            vmin=-1,
+            vmax=1,
+            square=False,
+            linewidths=0.5,
+            cbar_kws={"label": "Spearman r"},
+            ax=ax,
+        )
+
+        ax.set_title(
+            "Sentiment Features vs Commercial Success Metrics\n"
+            "(Spearman correlation; * p<0.05, ** p<0.01, *** p<0.001)",
+            fontsize=12,
+            pad=14,
+        )
+        ax.set_xlabel("Success Metric", fontsize=11)
+        ax.set_ylabel("Sentiment Feature", fontsize=11)
+        plt.setp(ax.get_xticklabels(), rotation=0, ha="center")
+        plt.setp(ax.get_yticklabels(), rotation=0)
+
+        n_min = int(n_grid[n_grid > 0].min()) if (n_grid > 0).any() else 0
+        n_max = int(n_grid.max())
+        fig.text(
+            0.99,
+            0.01,
+            f"n = {n_min}–{n_max} games per cell",
+            ha="right",
+            va="bottom",
+            fontsize=8,
+            color="gray",
+        )
+
+        plt.tight_layout()
+
+        save_path = self.figures_dir / "feature_metric_grid.png"
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"Saved: {save_path}")
+
     def plot_success_comparison(
         self,
         success_correlations: Dict,
@@ -1306,7 +1477,10 @@ class Visualizer:
         print("\n2. Correlation Matrix Heatmap")
         self.plot_correlation_matrix(game_sentiment, success_metrics)
 
-        print("\n3. Success Comparison Bar Chart")
+        print("\n3. Feature x Metric Correlation Grid")
+        self.plot_feature_metric_grid(game_sentiment, success_metrics)
+
+        print("\n4. Success Comparison Bar Chart")
         self.plot_success_comparison(success_correlations, post_release_correlation)
 
         print(f"\nAll extended validation plots saved to: {self.figures_dir}")
