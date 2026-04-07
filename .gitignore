@@ -16,9 +16,6 @@ env/
 Thumbs.db
 
 # --- IDE / tooling ---
-.vscode/
-.idea/
-.claude/
 *.swp
 
 # --- Data (regenerable via data_gatherer.py / data_pipeline.py) ---
