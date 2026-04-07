@@ -1,4 +1,4 @@
-"""Collect market success metrics from SteamSpy, Steam Store, and SteamCharts."""
+"""Collect market success metrics from SteamSpy and Steam Store."""
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +9,6 @@ import time
 
 import requests
 
-# Import game lists from data_gatherer
 from data_gatherer import load_game_registry
 
 _registry = load_game_registry()
@@ -29,24 +28,18 @@ class GameSuccessMetrics:
     app_id: int
     app_name: str
     collection_date: str
-    # SteamSpy data
     steamspy_owners_min: Optional[int] = None
     steamspy_owners_max: Optional[int] = None
     steamspy_players_forever: Optional[int] = None
     steamspy_avg_playtime: Optional[int] = None  # in minutes
     steamspy_positive: Optional[int] = None
     steamspy_negative: Optional[int] = None
-    # Steam Store data
     steam_metacritic_score: Optional[int] = None
     steam_total_reviews: Optional[int] = None
     steam_release_date: Optional[str] = None
     steam_current_price_usd: Optional[float] = None
-    # SteamCharts data
-    steamcharts_peak_all_time: Optional[int] = None
-    # Derived metrics
     estimated_revenue_usd: Optional[float] = None
     success_tier: Optional[str] = None  # Flop, Moderate, Hit, Blockbuster
-    # Status tracking
     data_complete: bool = False
     last_error: Optional[str] = None
 
@@ -78,13 +71,11 @@ class GameSuccessMetrics:
 
         NOTE: current_price_usd values were audited and corrected (2026-03-29).
         All Steam Store API calls now use cc=us&l=en to ensure USD prices.
-        Any future metadata update should validate prices via the cc=us parameter.
         """
         if self.steam_total_reviews and self.steam_current_price_usd is not None:
             estimated_sales = self.steam_total_reviews * review_multiplier
             self.estimated_revenue_usd = estimated_sales * self.steam_current_price_usd
         elif self.steam_total_reviews and self.steam_current_price_usd == 0:
-            # Free-to-play: revenue = 0 from base sales
             self.estimated_revenue_usd = 0.0
 
     def compute_success_tier(self):
@@ -119,7 +110,6 @@ class SteamSpyCollector:
         self.last_request_time = 0
 
     def _rate_limit(self):
-        """Enforce rate limiting."""
         elapsed = time.time() - self.last_request_time
         if elapsed < self.RATE_LIMIT_SECONDS:
             time.sleep(self.RATE_LIMIT_SECONDS - elapsed)
@@ -151,13 +141,11 @@ class SteamSpyCollector:
         if not owners_str or owners_str == "0":
             return (None, None)
 
-        # Remove commas and parse
         owners_str = owners_str.replace(",", "")
         match = re.search(r'(\d+)\s*\.\.\s*(\d+)', owners_str)
         if match:
             return (int(match.group(1)), int(match.group(2)))
 
-        # Single value
         try:
             val = int(owners_str)
             return (val, val)
@@ -175,7 +163,6 @@ class SteamStoreCollector:
         self.last_request_time = 0
 
     def _rate_limit(self):
-        """Enforce rate limiting."""
         elapsed = time.time() - self.last_request_time
         if elapsed < self.RATE_LIMIT_SECONDS:
             time.sleep(self.RATE_LIMIT_SECONDS - elapsed)
@@ -204,74 +191,12 @@ class SteamStoreCollector:
             return None
 
 
-class SteamChartsCollector:
-    """Collect data from SteamCharts (web scraping)."""
-
-    BASE_URL = "https://steamcharts.com/app"
-    RATE_LIMIT_SECONDS = 2.0
+class SuccessMetricsCollector:
+    """Coordinate collection from SteamSpy and Steam Store."""
 
     def __init__(self):
-        self.last_request_time = 0
-
-    def _rate_limit(self):
-        """Enforce rate limiting."""
-        elapsed = time.time() - self.last_request_time
-        if elapsed < self.RATE_LIMIT_SECONDS:
-            time.sleep(self.RATE_LIMIT_SECONDS - elapsed)
-        self.last_request_time = time.time()
-
-    def get_peak_players(self, app_id: int) -> Optional[int]:
-        """Get all-time peak concurrent players from SteamCharts.
-
-        Returns peak player count or None if unavailable.
-        """
-        self._rate_limit()
-
-        url = f"{self.BASE_URL}/{app_id}"
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            response = requests.get(url, headers=headers, timeout=30)
-
-            if response.status_code == 404:
-                return None
-
-            response.raise_for_status()
-
-            # Look for "All-Time Peak" pattern in the HTML
-            # Pattern: <span class="num">123,456</span>
-            content = response.text
-
-            # Look for the all-time peak section
-            peak_match = re.search(
-                r'All-Time Peak.*?<span[^>]*class="num"[^>]*>([\d,]+)</span>',
-                content,
-                re.IGNORECASE | re.DOTALL
-            )
-
-            if peak_match:
-                peak_str = peak_match.group(1).replace(",", "")
-                return int(peak_str)
-
-            return None
-
-        except requests.RequestException as e:
-            print(f"  SteamCharts error for {app_id}: {e}")
-            return None
-        except ValueError as e:
-            print(f"  SteamCharts parse error for {app_id}: {e}")
-            return None
-
-
-class SuccessMetricsCollector:
-    """Coordinate collection from all sources."""
-
-    def __init__(self, skip_steamcharts: bool = False):
         self.steamspy = SteamSpyCollector()
         self.steam_store = SteamStoreCollector()
-        self.steamcharts = SteamChartsCollector() if not skip_steamcharts else None
-        self.skip_steamcharts = skip_steamcharts
 
     def collect_for_game(self, app_id: int, app_name: str) -> GameSuccessMetrics:
         """Collect all available metrics for a single game."""
@@ -283,17 +208,13 @@ class SuccessMetricsCollector:
 
         errors = []
 
-        # Collect from SteamSpy
         print(f"  Fetching SteamSpy data...")
         steamspy_data = self.steamspy.get_app_details(app_id)
         if steamspy_data:
-            # Parse owners
             owners_str = steamspy_data.get('owners', '')
             owners_min, owners_max = self.steamspy.parse_owners(owners_str)
             metrics.steamspy_owners_min = owners_min
             metrics.steamspy_owners_max = owners_max
-
-            # Other metrics
             metrics.steamspy_players_forever = steamspy_data.get('players_forever')
             metrics.steamspy_avg_playtime = steamspy_data.get('average_forever')
             metrics.steamspy_positive = steamspy_data.get('positive')
@@ -301,45 +222,30 @@ class SuccessMetricsCollector:
         else:
             errors.append("SteamSpy failed")
 
-        # Collect from Steam Store
         print(f"  Fetching Steam Store data...")
         store_data = self.steam_store.get_app_details(app_id)
         if store_data:
-            # Metacritic
             metacritic = store_data.get('metacritic', {})
             metrics.steam_metacritic_score = metacritic.get('score')
 
-            # Total reviews (recommendations)
             recs = store_data.get('recommendations', {})
             metrics.steam_total_reviews = recs.get('total')
 
-            # Release date
             release_info = store_data.get('release_date', {})
             metrics.steam_release_date = release_info.get('date')
 
-            # Price (in cents from API, convert to USD)
             price_info = store_data.get('price_overview', {})
             if price_info:
+                # Price is in cents
                 metrics.steam_current_price_usd = price_info.get('initial', 0) / 100
             elif store_data.get('is_free'):
                 metrics.steam_current_price_usd = 0.0
         else:
             errors.append("Steam Store failed")
 
-        # Collect from SteamCharts (optional)
-        if not self.skip_steamcharts:
-            print(f"  Fetching SteamCharts data...")
-            peak = self.steamcharts.get_peak_players(app_id)
-            if peak is not None:
-                metrics.steamcharts_peak_all_time = peak
-            else:
-                errors.append("SteamCharts failed")
-
-        # Compute derived metrics
         metrics.compute_estimated_revenue()
         metrics.compute_success_tier()
 
-        # Determine completeness
         has_steamspy = metrics.steamspy_owners_min is not None
         has_store = metrics.steam_total_reviews is not None or metrics.steam_metacritic_score is not None
         metrics.data_complete = has_steamspy and has_store
@@ -365,7 +271,6 @@ class SuccessMetricsCollector:
         Returns:
             List of GameSuccessMetrics
         """
-        # Load existing data if resuming
         existing = {}
         if resume and output_file.exists():
             existing = self._load_existing(output_file)
@@ -378,7 +283,6 @@ class SuccessMetricsCollector:
             app_id = game['app_id']
             app_name = game['name']
 
-            # Skip if already collected
             if app_id in existing:
                 print(f"[{i}/{total}] Skipping {app_name} (already collected)")
                 results.append(existing[app_id])
@@ -390,13 +294,11 @@ class SuccessMetricsCollector:
                 metrics = self.collect_for_game(app_id, app_name)
                 results.append(metrics)
 
-                # Save incrementally
                 self._save_results(results, output_file)
                 print(f"  Complete: {metrics.data_complete}, Errors: {metrics.last_error or 'None'}")
 
             except Exception as e:
                 print(f"  ERROR: {e}")
-                # Create error entry
                 metrics = GameSuccessMetrics(
                     app_id=app_id,
                     app_name=app_name,
@@ -418,7 +320,6 @@ class SuccessMetricsCollector:
                 for row in reader:
                     app_id = int(row['app_id'])
 
-                    # Convert types
                     metrics = GameSuccessMetrics(
                         app_id=app_id,
                         app_name=row['app_name'],
@@ -433,7 +334,6 @@ class SuccessMetricsCollector:
                         steam_total_reviews=int(row['steam_total_reviews']) if row.get('steam_total_reviews') else None,
                         steam_release_date=row.get('steam_release_date') or None,
                         steam_current_price_usd=float(row['steam_current_price_usd']) if row.get('steam_current_price_usd') else None,
-                        steamcharts_peak_all_time=int(row['steamcharts_peak_all_time']) if row.get('steamcharts_peak_all_time') else None,
                         estimated_revenue_usd=float(row['estimated_revenue_usd']) if row.get('estimated_revenue_usd') else None,
                         success_tier=row.get('success_tier') or None,
                         data_complete=row.get('data_complete', '').lower() == 'true',
@@ -456,7 +356,6 @@ class SuccessMetricsCollector:
             'steamspy_positive', 'steamspy_negative',
             'steam_metacritic_score', 'steam_total_reviews', 'steam_release_date',
             'steam_current_price_usd',
-            'steamcharts_peak_all_time',
             'estimated_revenue_usd', 'success_tier',
             'data_complete', 'last_error',
         ]
@@ -466,7 +365,6 @@ class SuccessMetricsCollector:
             writer.writeheader()
             for metrics in results:
                 row = metrics.to_dict()
-                # Convert None to empty string for CSV
                 row = {k: ('' if v is None else v) for k, v in row.items()}
                 writer.writerow(row)
 
@@ -479,7 +377,7 @@ def collect_training_metrics():
     print(f"\nCollecting metrics for {len(EARLY_ACCESS_GAMES)} training games...")
     print(f"Output file: {OUTPUT_FILE}")
 
-    collector = SuccessMetricsCollector(skip_steamcharts=False)
+    collector = SuccessMetricsCollector()
     results = collector.collect_all(EARLY_ACCESS_GAMES, resume=True, output_file=OUTPUT_FILE)
 
     _print_summary(results, OUTPUT_FILE)
@@ -495,7 +393,7 @@ def collect_validation_metrics():
     print(f"Collecting metrics for {len(VALIDATION_GAMES)} validation games...")
     print(f"Output file: {VALIDATION_OUTPUT_FILE}")
 
-    collector = SuccessMetricsCollector(skip_steamcharts=False)
+    collector = SuccessMetricsCollector()
     results = collector.collect_all(VALIDATION_GAMES, resume=True, output_file=VALIDATION_OUTPUT_FILE)
 
     _print_summary(results, VALIDATION_OUTPUT_FILE)
@@ -507,10 +405,8 @@ def _print_summary(results: List[GameSuccessMetrics], output_file: Path):
     complete = sum(1 for r in results if r.data_complete)
     has_metacritic = sum(1 for r in results if r.steam_metacritic_score is not None)
     has_owners = sum(1 for r in results if r.steamspy_owners_min is not None)
-    has_peak = sum(1 for r in results if r.steamcharts_peak_all_time is not None)
     has_revenue = sum(1 for r in results if r.estimated_revenue_usd is not None)
 
-    # Count success tiers
     tier_counts = {}
     for r in results:
         if r.success_tier:
@@ -523,7 +419,6 @@ def _print_summary(results: List[GameSuccessMetrics], output_file: Path):
     print(f"Complete data: {complete}")
     print(f"Has Metacritic: {has_metacritic}")
     print(f"Has Owner estimates: {has_owners}")
-    print(f"Has Peak Players: {has_peak}")
     print(f"Has Estimated Revenue: {has_revenue}")
     if tier_counts:
         print(f"Success Tiers: {tier_counts}")
@@ -555,7 +450,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Default: collect validation metrics only
     if not args.training and not args.validation and not args.all:
         print("No arguments specified. Use --help for options.")
         print("Defaulting to --validation (new games for thesis)\n")

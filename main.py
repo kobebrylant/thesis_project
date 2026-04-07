@@ -70,19 +70,9 @@ def main():
     # --- Data gathering (granular) ---
     gather_group = parser.add_argument_group("Data gathering")
     gather_group.add_argument(
-        "--gather-reviews",
-        action="store_true",
-        help="Collect Steam reviews only (no metadata, no success metrics)",
-    )
-    gather_group.add_argument(
-        "--gather-metadata",
-        action="store_true",
-        help="Update game_metadata.csv only (no reviews, no success metrics)",
-    )
-    gather_group.add_argument(
         "--gather-success-metrics",
         action="store_true",
-        help="Collect market success metrics from SteamSpy/Steam Store/SteamCharts only",
+        help="Collect market success metrics from SteamSpy and Steam Store only",
     )
     gather_group.add_argument(
         "--force-recollect",
@@ -240,54 +230,6 @@ def main():
         results_dir=args.results_dir or base_dir / "results",
     )
 
-    # --- Granular data gathering ---
-    if args.gather_reviews:
-        from data_gatherer import (
-            load_game_registry,
-            collect_data_for_games,
-            DATA_DIR,
-            VALIDATION_DATA_DIR,
-            METADATA_FILE,
-            VALIDATION_METADATA_FILE,
-        )
-        from src.api_client import ResilientAPIClient
-
-        registry = load_game_registry()
-        with ResilientAPIClient() as client:
-            print("\n--- Collecting Steam reviews (training games) ---")
-            collect_data_for_games(
-                registry["training_games"], DATA_DIR, METADATA_FILE, client
-            )
-            print("\n--- Collecting Steam reviews (validation games) ---")
-            collect_data_for_games(
-                registry["validation_games"],
-                VALIDATION_DATA_DIR,
-                VALIDATION_METADATA_FILE,
-                client,
-            )
-        return
-
-    if args.gather_metadata:
-        from data_gatherer import (
-            load_game_registry,
-            collect_metadata_for_games,
-            METADATA_FILE,
-            VALIDATION_METADATA_FILE,
-        )
-        from src.api_client import ResilientAPIClient
-
-        registry = load_game_registry()
-        with ResilientAPIClient() as client:
-            print("\n--- Updating training metadata ---")
-            collect_metadata_for_games(
-                registry["training_games"], METADATA_FILE, client
-            )
-            print("\n--- Updating validation metadata ---")
-            collect_metadata_for_games(
-                registry["validation_games"], VALIDATION_METADATA_FILE, client
-            )
-        return
-
     if args.gather_success_metrics:
         from success_data_gatherer import (
             SuccessMetricsCollector,
@@ -305,7 +247,7 @@ def main():
                     print(f"Removing existing file: {f}")
                     f.unlink()
 
-        collector = SuccessMetricsCollector(skip_steamcharts=False)
+        collector = SuccessMetricsCollector()
 
         print("\n--- Training games ---")
         results = collector.collect_all(
@@ -324,7 +266,6 @@ def main():
         print(f"Validation: {complete}/{len(val_results)} games with full data")
         return
 
-    # --- ETL ---
     if args.build_dataset:
         import subprocess
 
@@ -381,14 +322,12 @@ def main():
 
         print("*** Ready for fresh training ***\n")
 
-        # Recreate checkpoint after clearing
         checkpoint = CheckpointManager(
             path_config=path_config,
             n_seeds=args.n_seeds,
             n_folds=args.n_folds,
         )
 
-    # --- Analysis ---
     if args.analyze:
         results_df = checkpoint.get_results_df()
         if results_df.empty:
@@ -505,11 +444,7 @@ def main():
             sys.exit(1)
         return
 
-    # --- Default: training ---
-    # If --train flag is set or no specific action flag was given, run training
     has_action = any([
-        args.gather_reviews,
-        args.gather_metadata,
         args.gather_success_metrics,
         args.build_dataset,
         args.analyze,
@@ -522,7 +457,6 @@ def main():
     if not args.train and has_action:
         return
 
-    # Training requires datasets
     print("\nLoading data...")
     data_loader = DataLoader(path_config)
 

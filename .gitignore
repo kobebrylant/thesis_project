@@ -29,6 +29,8 @@ results/figures/
 results/metrics/
 results/.DS_Store
 
+documents/
+
 # --- Scratch / backups ---
 results copy/
 test_data_verification/

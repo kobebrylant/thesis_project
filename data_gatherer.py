@@ -44,10 +44,6 @@ def ensure_data_dir(data_dir: str = DATA_DIR):
     os.makedirs(data_dir, exist_ok=True)
 
 
-# =============================================================================
-# Metadata collection
-# =============================================================================
-
 def load_existing_metadata(metadata_file: Path) -> Dict[int, Dict]:
     """Load already-collected metadata keyed by app_id."""
     existing = {}
@@ -149,10 +145,6 @@ def collect_metadata_for_games(
         save_metadata(existing, metadata_file)
         print(f"  Metadata saved to {metadata_file}")
 
-
-# =============================================================================
-# Review collection
-# =============================================================================
 
 def get_reviews_batch(
     client: ResilientAPIClient,
@@ -391,11 +383,9 @@ def collect_data_for_games(
     """Collect reviews + metadata for a list of games."""
     ensure_data_dir(data_dir)
 
-    # Phase 1: collect metadata for all games (one API call each, cached)
     print("\n--- Collecting game metadata ---")
     collect_metadata_for_games(games, metadata_file, client)
 
-    # Phase 2: collect reviews
     print("\n--- Collecting reviews ---")
     for game in games:
         app_id = game["app_id"]
@@ -407,7 +397,6 @@ def collect_data_for_games(
         ea_filename = f"{safe_name}_early_access_reviews.csv"
         post_filename = f"{safe_name}_post_release_reviews.csv"
 
-        # Early access reviews
         if file_exists(ea_filename, data_dir):
             print(f"Skipping {app_name} - early access reviews already exist\n")
         else:
@@ -422,7 +411,7 @@ def collect_data_for_games(
             if ea_reviews:
                 save_to_csv(ea_reviews, ea_filename, data_dir)
 
-        # Post-release reviews (skip for games still in EA)
+        # Skip post-release reviews for games still in EA
         if end_date == 9999999999:
             print(f"Skipping post-release reviews for {app_name} - still in Early Access\n")
             continue
@@ -464,76 +453,6 @@ def collect_validation_data(client: ResilientAPIClient):
     collect_data_for_games(games, VALIDATION_DATA_DIR, VALIDATION_METADATA_FILE, client)
 
 
-# =============================================================================
-# Multi-source collection (Reddit, YouTube)
-# =============================================================================
-
-def _get_release_dates_from_metadata(metadata_file: Path) -> Dict[int, str]:
-    """Load release dates from metadata CSV, keyed by app_id."""
-    dates = {}
-    existing = load_existing_metadata(metadata_file)
-    for app_id, record in existing.items():
-        rd = record.get("release_date", "")
-        if rd:
-            dates[app_id] = rd
-    return dates
-
-
-def collect_reddit_data(
-    games: List[Dict],
-    data_dir: str,
-    metadata_file: Path,
-    max_posts_per_sub: int = 100,
-    max_comments_per_post: int = 20,
-):
-    """Collect Reddit discussion data for all games."""
-    from src.sources.reddit_source import RedditSource
-    from src.sources.base_source import SourceRecord
-
-    ensure_data_dir(data_dir)
-    release_dates = _get_release_dates_from_metadata(metadata_file)
-
-    reddit = RedditSource()
-    output_file = os.path.join(data_dir, "reddit_data.csv")
-
-    # Load existing records to append
-    existing_app_ids = set()
-    if os.path.exists(output_file):
-        import pandas as pd
-        existing_df = pd.read_csv(output_file)
-        existing_app_ids = set(existing_df["app_id"].unique())
-        print(f"Found existing Reddit data for {len(existing_app_ids)} games")
-
-    all_records = []
-    for game in games:
-        app_id = game["app_id"]
-        if app_id in existing_app_ids:
-            print(f"Skipping {game['name']} - Reddit data already exists")
-            continue
-
-        release_date = release_dates.get(app_id)
-        print(f"\n[Reddit] Collecting for {game['name']}...")
-
-        try:
-            records = reddit.fetch(
-                app_id=app_id,
-                app_name=game["name"],
-                max_posts=max_posts_per_sub,
-                max_comments_per_post=max_comments_per_post,
-                release_date=release_date,
-            )
-            all_records.extend(records)
-            print(f"  Collected {len(records)} records")
-        except Exception as e:
-            print(f"  Error: {e}")
-
-    if all_records:
-        _save_source_records(all_records, output_file, append=os.path.exists(output_file))
-        print(f"\nReddit data saved to {output_file}")
-    else:
-        print("\nNo new Reddit data collected")
-
-
 def collect_youtube_data(
     games: List[Dict],
     data_dir: str,
@@ -543,10 +462,8 @@ def collect_youtube_data(
 ):
     """Collect YouTube trailer comment data for all games."""
     from src.sources.youtube_source import YouTubeSource
-    from src.sources.base_source import SourceRecord
 
     ensure_data_dir(data_dir)
-    release_dates = _get_release_dates_from_metadata(metadata_file)
 
     youtube = YouTubeSource()
     output_file = os.path.join(data_dir, "youtube_data.csv")
@@ -565,7 +482,6 @@ def collect_youtube_data(
             print(f"Skipping {game['name']} - YouTube data already exists")
             continue
 
-        release_date = release_dates.get(app_id)
         print(f"\n[YouTube] Collecting for {game['name']}...")
 
         try:
@@ -574,7 +490,6 @@ def collect_youtube_data(
                 app_name=game["name"],
                 max_videos=max_videos,
                 max_comments_per_video=max_comments_per_video,
-                release_date=release_date,
             )
             all_records.extend(records)
             print(f"  Collected {len(records)} records")
@@ -586,22 +501,6 @@ def collect_youtube_data(
         print(f"\nYouTube data saved to {output_file}")
     else:
         print("\nNo new YouTube data collected")
-
-
-def collect_article_data(
-    games: List[Dict],
-    metadata_file: Path,
-    pre_release_only: bool = False,
-):
-    """Scrape preview/review articles from trusted gaming outlets."""
-    from src.sources.article_scraper import scrape_articles_for_games
-
-    release_dates = _get_release_dates_from_metadata(metadata_file)
-    scrape_articles_for_games(
-        games,
-        release_dates=release_dates,
-        pre_release_only=pre_release_only,
-    )
 
 
 def _save_source_records(records: list, filepath: str, append: bool = False):
@@ -629,10 +528,9 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Collect data from Steam, Reddit, and YouTube for sentiment analysis"
+        description="Collect data from Steam and YouTube for sentiment analysis"
     )
 
-    # Dataset selection
     parser.add_argument(
         "--training",
         action="store_true",
@@ -648,40 +546,16 @@ def main():
         action="store_true",
         help="Collect for both training and validation games",
     )
-
-    # Source selection
     parser.add_argument(
         "--steam",
         action="store_true",
         help="Collect Steam reviews (default if no source specified)",
     )
     parser.add_argument(
-        "--reddit",
-        action="store_true",
-        help="Collect Reddit discussion data (requires REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET)",
-    )
-    parser.add_argument(
         "--youtube",
         action="store_true",
         help="Collect YouTube trailer comments (requires YOUTUBE_API_KEY)",
     )
-    parser.add_argument(
-        "--articles",
-        action="store_true",
-        help="Scrape preview/review articles from IGN, PC Gamer, Eurogamer, RPS, Destructoid",
-    )
-    parser.add_argument(
-        "--pre-release-only",
-        action="store_true",
-        help="When scraping articles, keep only pre-release articles (used with --articles)",
-    )
-    parser.add_argument(
-        "--all-sources",
-        action="store_true",
-        help="Collect from all available sources",
-    )
-
-    # Options
     parser.add_argument(
         "--fresh",
         action="store_true",
@@ -690,21 +564,13 @@ def main():
 
     args = parser.parse_args()
 
-    # Default dataset: validation
     if not args.training and not args.validation and not args.all:
         print("No dataset specified. Use --help for options.")
         print("Defaulting to --all (both training and validation)\n")
         args.all = True
 
-    # Default source: steam
-    if not args.steam and not args.reddit and not args.youtube and not args.all_sources:
+    if not args.steam and not args.youtube:
         args.steam = True
-
-    if args.all_sources:
-        args.steam = True
-        args.reddit = True
-        args.youtube = True
-        args.articles = True
 
     registry = load_game_registry()
 
@@ -724,17 +590,9 @@ def main():
                 print("\n--- Steam Reviews ---")
                 collect_data_for_games(games, data_dir, metadata_file, client)
 
-            if args.reddit:
-                print("\n--- Reddit Discussion ---")
-                collect_reddit_data(games, data_dir, metadata_file)
-
             if args.youtube:
                 print("\n--- YouTube Comments ---")
                 collect_youtube_data(games, data_dir, metadata_file)
-
-            if args.articles:
-                print("\n--- Preview/Review Articles ---")
-                collect_article_data(games, metadata_file, pre_release_only=args.pre_release_only)
 
     print("\n" + "=" * 70)
     print("DATA COLLECTION COMPLETE")
@@ -746,8 +604,6 @@ def main():
     sources = []
     if args.steam:
         sources.append("Steam")
-    if args.reddit:
-        sources.append("Reddit")
     if args.youtube:
         sources.append("YouTube")
     print(f"  Sources: {', '.join(sources)}")

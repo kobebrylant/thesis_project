@@ -29,12 +29,9 @@ class RateLimitConfig:
         return 1.0 / self.requests_per_second
 
 
-# Sensible defaults for known APIs
 DEFAULT_RATE_LIMITS: Dict[str, RateLimitConfig] = {
     "store.steampowered.com": RateLimitConfig(requests_per_second=1.0),
     "steamspy.com": RateLimitConfig(requests_per_second=1.0),
-    "steamcharts.com": RateLimitConfig(requests_per_second=0.5),
-    "oauth.reddit.com": RateLimitConfig(requests_per_second=1.0),
     "www.googleapis.com": RateLimitConfig(requests_per_second=5.0),
 }
 
