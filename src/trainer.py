@@ -94,9 +94,7 @@ class Trainer:
         print("CLASSICAL ML TRAINING")
         print("=" * 70)
         print(
-            f"\nTotal runs: {len(plan)}, Completed: {
-                len(plan) - len(remaining)
-            }, Remaining: {len(remaining)}"
+            f"\nTotal runs: {len(plan)}, Completed: {len(plan) - len(remaining)}, Remaining: {len(remaining)}"
         )
 
         if not remaining:
@@ -136,17 +134,14 @@ class Trainer:
                 )
 
                 print(
-                    f"  Seed {run.seed}, Fold {run.fold + 1}/{
-                        self.training_config.n_folds
-                    } - ",
+                    f"  Seed {run.seed}, Fold {run.fold + 1}/{self.training_config.n_folds} - ",
                     end="",
                 )
 
                 metrics = model.train(X_train, y_train, X_val, y_val)
 
                 print(
-                    f"F1={metrics.f1_score:.4f}, Acc={metrics.accuracy:.4f}, Time={
-                        metrics.train_time:.2f}s"
+                    f"F1={metrics.f1_score:.4f}, Acc={metrics.accuracy:.4f}, Time={metrics.train_time:.2f}s"
                 )
 
                 if save_models:
@@ -197,9 +192,7 @@ class Trainer:
         print("TRANSFORMER TRAINING")
         print("=" * 70)
         print(
-            f"\nTotal runs: {len(plan)}, Completed: {
-                len(plan) - len(remaining)
-            }, Remaining: {len(remaining)}"
+            f"\nTotal runs: {len(plan)}, Completed: {len(plan) - len(remaining)}, Remaining: {len(remaining)}"
         )
 
         if not remaining:
@@ -233,9 +226,7 @@ class Trainer:
                 y_train, y_val = y[train_idx], y[val_idx]
 
                 print(
-                    f"\n  Seed {run.seed}, Fold {run.fold + 1}/{
-                        self.training_config.n_folds
-                    }"
+                    f"\n  Seed {run.seed}, Fold {run.fold + 1}/{self.training_config.n_folds}"
                 )
 
                 model = TransformerModelFactory.create(
@@ -248,8 +239,7 @@ class Trainer:
                     metrics = model.train(X_train, y_train, X_val, y_val)
 
                     print(
-                        f"  F1={metrics.f1_score:.4f}, Acc={
-                            metrics.accuracy:.4f}, Time={metrics.train_time:.1f}s"
+                        f"  F1={metrics.f1_score:.4f}, Acc={metrics.accuracy:.4f}, Time={metrics.train_time:.1f}s"
                     )
 
                     if save_models:
