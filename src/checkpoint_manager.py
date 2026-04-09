@@ -230,8 +230,7 @@ class CheckpointManager:
             bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
             status = "✓" if completed >= runs_per_model else " "
             print(
-                f"  [{status}] {model:20s} [{bar}] {completed:3d}/{runs_per_model} ({
-                    pct:.0f}%)"
+                f"  [{status}] {model:20s} [{bar}] {completed:3d}/{runs_per_model} ({pct:.0f}%)"
             )
 
         total_completed = self.get_completed_count()

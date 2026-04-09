@@ -29,9 +29,7 @@ class FriedmanResult:
             f"Kendall's W (effect size): {self.kendall_w:.4f}",
             f"Samples: {self.n_samples}, Models: {self.n_models}",
             "",
-            f"Conclusion: {
-                'Significant (p < 0.05)' if self.significant else 'Not significant'
-            }",
+            f"Conclusion: {'Significant (p < 0.05)' if self.significant else 'Not significant'}",
         ]
         return "\n".join(lines)
 
@@ -105,24 +103,16 @@ class StatisticalAnalyzer:
                 completion_ratio = pivot_df[col].notna().sum() / total_runs
                 if completion_ratio >= min_completion_ratio:
                     if completion_ratio < 1.0:
+                        included_str = 'included' if completion_ratio >= min_completion_ratio else 'excluded'
                         print(
-                            f"  WARNING: {col} has {pivot_df[col].notna().sum()}/{
-                                total_runs
-                            } "
-                            f"runs ({completion_ratio * 100:.1f}% complete) - "
-                            f"{
-                                'included'
-                                if completion_ratio >= min_completion_ratio
-                                else 'excluded'
-                            }"
+                            f"  WARNING: {col} has {pivot_df[col].notna().sum()}/{total_runs} "
+                            f"runs ({completion_ratio * 100:.1f}% complete) - {included_str}"
                         )
                     complete_models.append(col)
                 else:
                     excluded_models.append(col)
                     print(
-                        f"  EXCLUDING {col}: only {pivot_df[col].notna().sum()}/{
-                            total_runs
-                        } "
+                        f"  EXCLUDING {col}: only {pivot_df[col].notna().sum()}/{total_runs} "
                         f"runs ({completion_ratio * 100:.1f}% complete)"
                     )
 
@@ -438,9 +428,7 @@ class StatisticalAnalyzer:
                     )
             if incomplete_models_info:
                 print(
-                    f"\nModels with incomplete data: {
-                        ', '.join(incomplete_models_info)
-                    }"
+                    f"\nModels with incomplete data: {', '.join(incomplete_models_info)}"
                 )
 
             if excluded_models:
@@ -461,9 +449,7 @@ class StatisticalAnalyzer:
             print(f"Models excluded from statistical tests: {excluded_models}")
         if verbose:
             print(
-                f"\nData passed: {len(pivot_df)} observations x {
-                    len(pivot_df.columns)
-                } models"
+                f"\nData passed: {len(pivot_df)} observations x {len(pivot_df.columns)} models"
             )
         print(friedman_result.summary())
         results["friedman"] = friedman_result
@@ -577,9 +563,7 @@ class StatisticalAnalyzer:
 
         print(f"  Input data: {len(pivot_df)} runs, {len(pivot_df.columns)} models")
         print(
-            f"  After processing: {len(pivot_clean)} runs, {
-                len(pivot_clean.columns)
-            } models (used in tests)"
+            f"  After processing: {len(pivot_clean)} runs, {len(pivot_clean.columns)} models (used in tests)"
         )
         if excluded:
             print(f"  Excluded models: {excluded}")

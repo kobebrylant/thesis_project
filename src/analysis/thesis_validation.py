@@ -99,9 +99,7 @@ class ThesisValidator:
             )
 
         print(
-            f"\nLoading {len(csv_files)} validation CSV files from {
-                VALIDATION_DATA_DIR
-            }"
+            f"\nLoading {len(csv_files)} validation CSV files from {VALIDATION_DATA_DIR}"
         )
         print("(These games were NEVER seen during model training)\n")
 
@@ -164,12 +162,10 @@ class ThesisValidator:
         print(f"Loaded {len(combined_df):,} validation reviews")
         print(f"Games: {combined_df['game_name'].nunique()}")
         print(
-            f"EA reviews: {
-                len(combined_df[combined_df['review_type'] == 'early_access']):,}"
+            f"EA reviews: {len(combined_df[combined_df['review_type'] == 'early_access']):,}"
         )
         print(
-            f"Post-release reviews: {
-                len(combined_df[combined_df['review_type'] == 'post_release']):,}"
+            f"Post-release reviews: {len(combined_df[combined_df['review_type'] == 'post_release']):,}"
         )
 
         return combined_df
@@ -629,8 +625,7 @@ class ThesisValidator:
             corr = results["post_release_correlation"]
             sig = "***" if corr.is_significant else ""
             print(
-                f"\nPost-Release Sentiment: r={corr.spearman_r:.3f} (p={
-                    corr.spearman_p:.4f}) {sig}"
+                f"\nPost-Release Sentiment: r={corr.spearman_r:.3f} (p={corr.spearman_p:.4f}) {sig}"
             )
 
         if "success_correlations" in results and results["success_correlations"]:
@@ -638,8 +633,7 @@ class ThesisValidator:
             for metric_name, corr in results["success_correlations"].items():
                 sig = "***" if corr.is_significant else ""
                 print(
-                    f"  {metric_name}: r={corr.spearman_r:.3f} (p={
-                        corr.spearman_p:.4f}) {sig}"
+                    f"  {metric_name}: r={corr.spearman_r:.3f} (p={corr.spearman_p:.4f}) {sig}"
                 )
 
         print("\n" + "-" * 40)
@@ -851,9 +845,7 @@ class ThesisValidator:
             print(f"Loaded validation success metrics: {len(success_metrics)} games")
         else:
             print(
-                f"Validation success metrics not found at {
-                    VALIDATION_SUCCESS_METRICS_FILE
-                }"
+                f"Validation success metrics not found at {VALIDATION_SUCCESS_METRICS_FILE}"
             )
             print("Trying main success metrics file...")
             success_metrics = self.load_success_metrics()
@@ -994,8 +986,7 @@ class ThesisValidator:
             corr = results["post_release_correlation"]
             sig = "***" if corr.is_significant else ""
             print(
-                f"\nPost-Release Sentiment: r={corr.spearman_r:.3f} (p={
-                    corr.spearman_p:.4f}) {sig}"
+                f"\nPost-Release Sentiment: r={corr.spearman_r:.3f} (p={corr.spearman_p:.4f}) {sig}"
             )
 
         if "success_correlations" in results and results["success_correlations"]:
@@ -1003,8 +994,7 @@ class ThesisValidator:
             for metric_name, corr in results["success_correlations"].items():
                 sig = "***" if corr.is_significant else ""
                 print(
-                    f"  {metric_name}: r={corr.spearman_r:.3f} (p={
-                        corr.spearman_p:.4f}) {sig}"
+                    f"  {metric_name}: r={corr.spearman_r:.3f} (p={corr.spearman_p:.4f}) {sig}"
                 )
 
         print("\n" + "-" * 40)

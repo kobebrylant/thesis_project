@@ -161,8 +161,7 @@ class Visualizer:
                 subset = df[df["review_type"] == review_type]
                 pos_pct = subset["positive"].mean() * 100
                 print(
-                    f"  {review_type}: {len(subset):,} reviews ({
-                        pos_pct:.1f}% positive)"
+                    f"  {review_type}: {len(subset):,} reviews ({pos_pct:.1f}% positive)"
                 )
 
     def plot_early_access_vs_post_release(self, df: pd.DataFrame) -> None:
@@ -823,9 +822,7 @@ class Visualizer:
         fig.text(
             0.5,
             0.91,
-            f"Average results from {n_seeds * n_folds} runs ({n_seeds} seeds x {
-                n_folds
-            } folds per model){conf_label}",
+            f"Average results from {n_seeds * n_folds} runs ({n_seeds} seeds x {n_folds} folds per model){conf_label}",
             ha="center",
             fontsize=12,
             style="italic",

@@ -210,11 +210,8 @@ def collect_early_access_reviews(
         )
 
         if not response or not response.get("success"):
-            print(
-                f"Failed to fetch reviews. Success: {
-                    response.get('success') if response else 'No data'
-                }"
-            )
+            success_val = response.get('success') if response else 'No data'
+            print(f"Failed to fetch reviews. Success: {success_val}")
             break
 
         batch_reviews = response.get("reviews", [])
@@ -291,11 +288,8 @@ def collect_post_release_reviews(
         )
 
         if not response or not response.get("success"):
-            print(
-                f"Failed to fetch reviews. Success: {
-                    response.get('success') if response else 'No response'
-                }"
-            )
+            success_val = response.get('success') if response else 'No response'
+            print(f"Failed to fetch reviews. Success: {success_val}")
             break
 
         batch_reviews = response.get("reviews", [])
