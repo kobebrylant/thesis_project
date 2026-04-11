@@ -150,6 +150,7 @@ class TransformerModel(BaseModel):
             seed=self.seed,
             report_to="none",
             disable_tqdm=True,
+            use_mps_device=(self.device.type == "mps"),
         )
 
         trainer = WeightedTrainer(
