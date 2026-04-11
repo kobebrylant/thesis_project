@@ -85,7 +85,7 @@ class TrainingConfig:
     tfidf_sublinear_tf: bool = True
 
     transformer_max_length: int = 128
-    transformer_batch_size: int = 32
+    transformer_batch_size: int = 128
     transformer_learning_rate: float = 3e-5
     transformer_epochs: int = 2
     transformer_warmup_ratio: float = 0.06
