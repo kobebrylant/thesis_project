@@ -86,7 +86,7 @@ class TransformerModel(BaseModel):
 
         self._tokenizer = AutoTokenizer.from_pretrained(self._model_path)
         self._model = AutoModelForSequenceClassification.from_pretrained(
-            self._model_path, num_labels=2
+            self._model_path, num_labels=2, use_safetensors=True
         ).to(self.device)
 
     def train(
@@ -244,7 +244,9 @@ class TransformerModel(BaseModel):
         from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
         self._tokenizer = AutoTokenizer.from_pretrained(path)
-        self._model = AutoModelForSequenceClassification.from_pretrained(path).to(self.device)
+        self._model = AutoModelForSequenceClassification.from_pretrained(
+            path, use_safetensors=True
+        ).to(self.device)
 
 
 class TransformerModelFactory:
