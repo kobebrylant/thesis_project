@@ -141,7 +141,7 @@ class TransformerModel(BaseModel):
             learning_rate=self.config["learning_rate"],
             warmup_ratio=self.config["warmup_ratio"],
             weight_decay=self.config["weight_decay"],
-            logging_steps=50,
+            logging_steps=500,
             eval_strategy="epoch",
             save_strategy="epoch",
             load_best_model_at_end=True,

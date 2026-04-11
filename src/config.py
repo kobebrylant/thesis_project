@@ -190,7 +190,7 @@ CLASSICAL_PARAMS = {
 
 TRANSFORMER_PATHS = {
     "ELECTRA": "google/electra-small-discriminator",
-    "RoBERTa": "roberta-base",
+    "RoBERTa": "distilroberta-base",
 }
 
 CLASSICAL_MODELS = list(CLASSICAL_PARAMS.keys())
