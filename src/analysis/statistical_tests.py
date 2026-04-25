@@ -41,6 +41,9 @@ class CorrelationResult:
     pearson_r: float
     pearson_p: float
     n_samples: int
+    partial_r: Optional[float] = None
+    partial_p: Optional[float] = None
+    control_var: Optional[str] = None
 
     @property
     def is_significant(self) -> bool:

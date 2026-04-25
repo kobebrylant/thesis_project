@@ -155,13 +155,31 @@ class Visualizer:
         print(f"  Min: {df_plot['text_length'].min()} characters")
         print(f"  Max: {df_plot['text_length'].max()} characters")
 
+        total_pos = int((df["positive"] == 1).sum())
+        total_neg = int((df["positive"] == 0).sum())
+        total_all = total_pos + total_neg
+        ratio = total_pos / total_neg if total_neg else float("inf")
+        print(f"\nClass balance:")
+        print(
+            f"  Overall: {total_all:,} reviews  "
+            f"| pos={total_pos:,} ({total_pos / total_all * 100:.1f}%)  "
+            f"neg={total_neg:,} ({total_neg / total_all * 100:.1f}%)  "
+            f"| pos:neg = {ratio:.2f}:1"
+        )
+
         if "review_type" in df.columns:
             print(f"\nReview type distribution:")
             for review_type in df["review_type"].unique():
                 subset = df[df["review_type"] == review_type]
-                pos_pct = subset["positive"].mean() * 100
+                pos = int((subset["positive"] == 1).sum())
+                neg = int((subset["positive"] == 0).sum())
+                n = pos + neg
+                pos_pct = pos / n * 100 if n else 0.0
+                r = pos / neg if neg else float("inf")
                 print(
-                    f"  {review_type}: {len(subset):,} reviews ({pos_pct:.1f}% positive)"
+                    f"  {review_type}: {n:,} reviews  "
+                    f"| pos={pos:,} ({pos_pct:.1f}%)  neg={neg:,}  "
+                    f"| pos:neg = {r:.2f}:1"
                 )
 
     def plot_early_access_vs_post_release(self, df: pd.DataFrame) -> None:
@@ -221,7 +239,7 @@ class Visualizer:
         n_folds: int = 5,
         incomplete_models: Optional[Dict[str, str]] = None,
     ) -> None:
-        fig, ax = plt.subplots(figsize=(12, 7))
+        fig, ax = plt.subplots(figsize=(18, 7))
 
         VISUAL_ERROR_SCALE = 20
 
@@ -822,7 +840,9 @@ class Visualizer:
         fig.text(
             0.5,
             0.91,
-            f"Average results from {n_seeds * n_folds} runs ({n_seeds} seeds x {n_folds} folds per model){conf_label}",
+            f"Average results from {n_seeds * n_folds} runs ({n_seeds} seeds x {
+                n_folds
+            } folds per model){conf_label}",
             ha="center",
             fontsize=12,
             style="italic",

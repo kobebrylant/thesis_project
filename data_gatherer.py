@@ -26,6 +26,11 @@ METADATA_FIELDNAMES = [
     "publisher",
     "release_date",
     "current_price_usd",
+    "genres",
+    "categories",
+    "platforms",
+    "required_age",
+    "short_description",
 ]
 
 
@@ -59,9 +64,13 @@ def save_metadata(metadata_records: Dict[int, Dict], metadata_file: Path):
     """Save metadata dict to CSV."""
     metadata_file.parent.mkdir(parents=True, exist_ok=True)
     with open(metadata_file, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=METADATA_FIELDNAMES)
+        writer = csv.DictWriter(
+            f, fieldnames=METADATA_FIELDNAMES, extrasaction="ignore"
+        )
         writer.writeheader()
         for record in metadata_records.values():
+            for col in METADATA_FIELDNAMES:
+                record.setdefault(col, "")
             writer.writerow(record)
 
 
@@ -84,6 +93,11 @@ def fetch_game_metadata(
         "publisher": "",
         "release_date": "",
         "current_price_usd": "",
+        "genres": "",
+        "categories": "",
+        "platforms": "",
+        "required_age": "",
+        "short_description": "",
     }
 
     try:
@@ -115,6 +129,19 @@ def fetch_game_metadata(
             record["current_price_usd"] = price_info.get("initial", 0) / 100
         elif details.get("is_free"):
             record["current_price_usd"] = 0.0
+
+        genres = details.get("genres", [])
+        record["genres"] = "|".join(g.get("description", "") for g in genres if g.get("description"))
+
+        categories = details.get("categories", [])
+        record["categories"] = "|".join(c.get("description", "") for c in categories if c.get("description"))
+
+        platforms = details.get("platforms", {})
+        plat_list = [p for p, enabled in platforms.items() if enabled]
+        record["platforms"] = "|".join(plat_list)
+
+        record["required_age"] = details.get("required_age", 0)
+        record["short_description"] = details.get("short_description", "")
 
     except Exception as e:
         print(f"  Error fetching metadata for {app_name}: {e}")
@@ -192,10 +219,20 @@ def collect_early_access_reviews(
     end_date: int,
     max_reviews: int = 500,
 ) -> List[Dict]:
+    """Collect EA-period reviews using Steam's ``written_during_early_access`` flag.
+
+    The flag is Steam's authoritative marker for whether a review was
+    submitted while the game was in Early Access. We also pass the
+    registry's EA window via ``date_range_type=include`` so Steam
+    prefilters server-side to that range. Timestamp membership in
+    [start_date, end_date] is accepted as a fallback for the small
+    number of games where the flag is missing.
+    """
     reviews = []
     cursor = "*"
     empty_batches = 0
     max_empty_batches = 5
+    effective_end = end_date if end_date != 9999999999 else 2_000_000_000
 
     print(f"Collecting early access reviews for {app_name} (App ID: {app_id})...")
 
@@ -221,7 +258,14 @@ def collect_early_access_reviews(
 
         batch_count = 0
         for review in batch_reviews:
-            if not review.get("written_during_early_access", False):
+            ts = review.get("timestamp_created", 0)
+            flagged_ea = review.get("written_during_early_access", False)
+            in_window = start_date <= ts <= effective_end
+
+            # Accept if Steam tagged it as EA, or (fallback) if timestamp
+            # is inside the registry-declared EA window. The flag is the
+            # authoritative signal; the timestamp check is a safety net.
+            if not (flagged_ea or in_window):
                 continue
 
             reviews.append(
@@ -245,8 +289,7 @@ def collect_early_access_reviews(
             )
             if empty_batches >= max_empty_batches:
                 print(
-                    "Breaking: Steam API may not be returning EA-flagged reviews "
-                    "for this game."
+                    "Breaking: no more EA reviews available for this game."
                 )
                 break
         else:
@@ -269,7 +312,15 @@ def collect_post_release_reviews(
     app_id: int,
     app_name: str,
     max_reviews: int = 500,
+    end_date: Optional[int] = None,
 ) -> List[Dict]:
+    """Collect post-release reviews using timestamp-based filtering.
+
+    A review is post-release if its ``timestamp_created`` is strictly
+    greater than the EA ``end_date`` (i.e. after full launch). This
+    avoids relying on the unreliable ``written_during_early_access``
+    flag.
+    """
     reviews = []
     cursor = "*"
     empty_batches = 0
@@ -299,8 +350,17 @@ def collect_post_release_reviews(
 
         batch_count = 0
         for review in batch_reviews:
-            if review.get("written_during_early_access", False):
-                continue
+            ts = review.get("timestamp_created", 0)
+            flagged_ea = review.get("written_during_early_access", False)
+
+            # Timestamp-based: post-release if after end_date (when known).
+            # Fallback to the unreliable flag when no end_date provided.
+            if end_date is not None:
+                if ts <= end_date:
+                    continue
+            else:
+                if flagged_ea:
+                    continue
 
             reviews.append(
                 {
@@ -323,8 +383,8 @@ def collect_post_release_reviews(
             )
             if empty_batches >= max_empty_batches:
                 print(
-                    "Breaking: Game likely still in Early Access. "
-                    "All reviews have early_access flag."
+                    "Breaking: Game likely still in Early Access "
+                    "or no post-release reviews found."
                 )
                 break
         else:
@@ -418,6 +478,7 @@ def collect_data_for_games(
                 app_id=app_id,
                 app_name=app_name,
                 max_reviews=max_reviews,
+                end_date=end_date,
             )
             if post_reviews:
                 save_to_csv(post_reviews, post_filename, data_dir)

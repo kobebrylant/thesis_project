@@ -38,6 +38,9 @@ class GameSuccessMetrics:
     steam_total_reviews: Optional[int] = None
     steam_release_date: Optional[str] = None
     steam_current_price_usd: Optional[float] = None
+    steamspy_genre: Optional[str] = None
+    steamspy_tags: Optional[str] = None  # pipe-separated, ordered by votes desc
+    steamspy_languages: Optional[str] = None
     estimated_revenue_usd: Optional[float] = None
     success_tier: Optional[str] = None  # Flop, Moderate, Hit, Blockbuster
     data_complete: bool = False
@@ -219,6 +222,13 @@ class SuccessMetricsCollector:
             metrics.steamspy_avg_playtime = steamspy_data.get('average_forever')
             metrics.steamspy_positive = steamspy_data.get('positive')
             metrics.steamspy_negative = steamspy_data.get('negative')
+            metrics.steamspy_genre = steamspy_data.get('genre') or None
+            metrics.steamspy_languages = steamspy_data.get('languages') or None
+
+            tags = steamspy_data.get('tags') or {}
+            if isinstance(tags, dict) and tags:
+                sorted_tags = sorted(tags.items(), key=lambda kv: kv[1], reverse=True)
+                metrics.steamspy_tags = "|".join(t for t, _ in sorted_tags[:10])
         else:
             errors.append("SteamSpy failed")
 
@@ -334,6 +344,9 @@ class SuccessMetricsCollector:
                         steam_total_reviews=int(row['steam_total_reviews']) if row.get('steam_total_reviews') else None,
                         steam_release_date=row.get('steam_release_date') or None,
                         steam_current_price_usd=float(row['steam_current_price_usd']) if row.get('steam_current_price_usd') else None,
+                        steamspy_genre=row.get('steamspy_genre') or None,
+                        steamspy_tags=row.get('steamspy_tags') or None,
+                        steamspy_languages=row.get('steamspy_languages') or None,
                         estimated_revenue_usd=float(row['estimated_revenue_usd']) if row.get('estimated_revenue_usd') else None,
                         success_tier=row.get('success_tier') or None,
                         data_complete=row.get('data_complete', '').lower() == 'true',
@@ -356,6 +369,7 @@ class SuccessMetricsCollector:
             'steamspy_positive', 'steamspy_negative',
             'steam_metacritic_score', 'steam_total_reviews', 'steam_release_date',
             'steam_current_price_usd',
+            'steamspy_genre', 'steamspy_tags', 'steamspy_languages',
             'estimated_revenue_usd', 'success_tier',
             'data_complete', 'last_error',
         ]

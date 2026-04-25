@@ -27,23 +27,16 @@ DEFAULT_OUTPUT = Path("results/metrics/youtube_sentiment.csv")
 
 def compute_game_features(
     game_df: pd.DataFrame,
-    model,
-    tfidf,
+    predictor,
 ) -> dict:
     """Compute sentiment features for a single game's YouTube comments."""
     texts = game_df["cleaned_text"].values
     raw_texts = game_df["text"].values
 
-    X = tfidf.transform(texts)
-    predictions = model.predict(X)
-
-    if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(X)
-        positive_probs = proba[:, 1]
-        avg_positive_prob = positive_probs.mean()
-    else:
-        positive_probs = predictions.astype(float)
-        avg_positive_prob = predictions.mean()
+    proba = predictor.predict_proba(texts)
+    positive_probs = proba[:, 1]
+    predictions = np.argmax(proba, axis=-1)
+    avg_positive_prob = positive_probs.mean()
 
     word_counts = np.array([len(str(t).split()) for t in raw_texts])
     pos_mask = predictions == 1
@@ -80,10 +73,10 @@ def main():
     # Load model
     path_config = PathConfig()
     validator = ThesisValidator(path_config)
-    model, tfidf, model_name = validator.load_best_model(
+    predictor = validator.load_predictor(
         model_name=args.model, seed=args.seed, fold=args.fold,
     )
-    print(f"Using model: {model_name}\n")
+    print(f"Using model: {predictor.name}\n")
 
     # Load and clean YouTube comments
     print(f"Loading {YOUTUBE_DATA_FILE}...")
@@ -105,7 +98,7 @@ def main():
         if len(game_df) < args.min_comments:
             print(f"  Skipping {app_name}: only {len(game_df)} comments")
             continue
-        features = compute_game_features(game_df, model, tfidf)
+        features = compute_game_features(game_df, predictor)
         rows.append({"app_id": app_id, "app_name": app_name, **features})
 
     result_df = pd.DataFrame(rows).sort_values(

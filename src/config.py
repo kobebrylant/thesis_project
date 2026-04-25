@@ -150,7 +150,6 @@ CLASSICAL_PARAMS = {
         "colsample_bytree": 0.8,
         "eval_metric": "logloss",
         "tree_method": "hist",
-        "scale_pos_weight": 84218 / 478637,
         "n_jobs": -1,
         "verbosity": 0,
     },

@@ -197,6 +197,33 @@ def main():
         action="store_true",
         help="Run thesis validation on UNSEEN validation games only (no data leakage)",
     )
+    validation_group.add_argument(
+        "--validation-model",
+        type=str,
+        default=None,
+        help=(
+            "Model to use for thesis validation "
+            "(e.g. ELECTRA, RoBERTa, LogisticRegression, LightGBM). "
+            "Default: first available, preferring transformers."
+        ),
+    )
+    validation_group.add_argument(
+        "--predict-success",
+        action="store_true",
+        help=(
+            "Run LOO-CV success prediction (tier classification + revenue regression) "
+            "with a Steam-only vs YouTube-only vs combined feature ablation."
+        ),
+    )
+    validation_group.add_argument(
+        "--youtube-sentiment-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Path to YouTube sentiment features CSV "
+            "(default: results/metrics/youtube_sentiment.csv)."
+        ),
+    )
 
     # --- Utility ---
     util_group = parser.add_argument_group("Utility")
@@ -407,6 +434,66 @@ def main():
             sys.exit(1)
         return
 
+    # --- Success prediction with multi-source ablation ---
+    if args.predict_success:
+        import pandas as pd
+
+        from src.analysis import SuccessPredictor
+
+        metrics_csv = Path("data/game_success_metrics.csv")
+        sentiment_csv = path_config.metrics_dir / "training_game_sentiment.csv"
+        yt_csv = args.youtube_sentiment_csv or (
+            path_config.metrics_dir / "youtube_sentiment.csv"
+        )
+
+        if not metrics_csv.exists():
+            print(f"\nERROR: {metrics_csv} not found.")
+            print("Run: python main.py --gather-success-metrics")
+            sys.exit(1)
+        if not yt_csv.exists():
+            print(f"\nERROR: {yt_csv} not found.")
+            print("Run: python youtube_sentiment.py")
+            sys.exit(1)
+
+        if sentiment_csv.exists():
+            print(f"\nUsing cached training sentiment: {sentiment_csv}")
+            game_sentiment = pd.read_csv(sentiment_csv)
+        else:
+            print(
+                f"\nTraining-games sentiment CSV not found — computing it now "
+                f"(will cache to {sentiment_csv})"
+            )
+            validator = ThesisValidator(path_config)
+            predictor_model = validator.load_predictor(args.validation_model)
+            print(f"Predicting EA sentiment with {predictor_model.name}...")
+
+            data_loader = DataLoader(path_config)
+            data = data_loader.load_all_reviews()
+            game_sentiment = validator.calculate_game_sentiment(data.df, predictor_model)
+            sentiment_csv.parent.mkdir(parents=True, exist_ok=True)
+            game_sentiment.to_csv(sentiment_csv, index=False)
+            print(f"Saved training sentiment to {sentiment_csv}")
+
+        success_metrics = pd.read_csv(metrics_csv)
+        youtube_sentiment = pd.read_csv(yt_csv)
+
+        print("\n" + "=" * 70)
+        print("SUCCESS PREDICTION — multi-source ablation (training games)")
+        print("=" * 70)
+        print(f"Steam sentiment:   {sentiment_csv} ({len(game_sentiment)} games)")
+        print(f"Success metrics:   {metrics_csv} ({len(success_metrics)} games)")
+        print(f"YouTube sentiment: {yt_csv} ({len(youtube_sentiment)} games)")
+
+        success_predictor = SuccessPredictor(path_config)
+        ablation_df = success_predictor.run_ablation(
+            game_sentiment, success_metrics, youtube_sentiment
+        )
+
+        out_path = path_config.metrics_dir / "success_prediction_ablation.csv"
+        ablation_df.to_csv(out_path, index=False)
+        print(f"\nAblation results saved to {out_path}")
+        return
+
     # --- Thesis validation (always uses validation dataset only) ---
     if args.validate_thesis:
         print("\n" + "=" * 70)
@@ -417,7 +504,9 @@ def main():
 
         validator = ThesisValidator(path_config)
         try:
-            validation_results = validator.run_validation_on_new_games()
+            validation_results = validator.run_validation_on_new_games(
+                model_name=args.validation_model,
+            )
 
             if "game_sentiment" in validation_results:
                 visualizer = Visualizer(path_config)
@@ -451,6 +540,7 @@ def main():
         args.visualize,
         args.data_distribution,
         args.validate_thesis,
+        args.predict_success,
         args.status,
     ])
 

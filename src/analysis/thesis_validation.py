@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import joblib
 import numpy as np
@@ -13,12 +13,128 @@ from ..config import PathConfig
 from .statistical_tests import CorrelationResult
 
 
+CLASSICAL_MODEL_NAMES = [
+    "LogisticRegression",
+    "LightGBM",
+    "SVM",
+    "XGBoost",
+    "NaiveBayes",
+]
+TRANSFORMER_MODEL_NAMES = ["ELECTRA", "RoBERTa"]
+TRANSFORMER_INFERENCE_BATCH_SIZE = 64
+
+
+class SentimentPredictor:
+    """Unified prediction adapter for classical (sklearn + TF-IDF) and transformer models.
+
+    Exposes `predict(texts)` and `predict_proba(texts)` so validation code can treat
+    both families identically. Transformer inference is batched to avoid OOM on large
+    validation sets.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        kind: str,
+        model: Any,
+        tfidf: Any = None,
+        tokenizer: Any = None,
+        device: Any = None,
+        max_length: int = 128,
+    ):
+        self.name = name
+        self.kind = kind
+        self.model = model
+        self.tfidf = tfidf
+        self.tokenizer = tokenizer
+        self.device = device
+        self.max_length = max_length
+
+    def predict(self, texts: np.ndarray) -> np.ndarray:
+        if self.kind == "classical":
+            return self.model.predict(self.tfidf.transform(texts))
+        return np.argmax(self._transformer_logits(texts), axis=-1)
+
+    def predict_proba(self, texts: np.ndarray) -> np.ndarray:
+        if self.kind == "classical":
+            if hasattr(self.model, "predict_proba"):
+                return self.model.predict_proba(self.tfidf.transform(texts))
+            preds = self.model.predict(self.tfidf.transform(texts)).astype(float)
+            proba = np.zeros((len(preds), 2), dtype=float)
+            proba[:, 1] = preds
+            proba[:, 0] = 1.0 - preds
+            return proba
+        import torch
+
+        logits = self._transformer_logits(texts)
+        exp = np.exp(logits - logits.max(axis=-1, keepdims=True))
+        return exp / exp.sum(axis=-1, keepdims=True)
+
+    def _transformer_logits(self, texts: np.ndarray) -> np.ndarray:
+        import torch
+
+        self.model.eval()
+        all_logits: List[np.ndarray] = []
+        batch_size = TRANSFORMER_INFERENCE_BATCH_SIZE
+        text_list = [str(t) for t in texts]
+        with torch.no_grad():
+            for i in range(0, len(text_list), batch_size):
+                batch = text_list[i : i + batch_size]
+                encodings = self.tokenizer(
+                    batch,
+                    truncation=True,
+                    padding=True,
+                    max_length=self.max_length,
+                    return_tensors="pt",
+                ).to(self.device)
+                outputs = self.model(**encodings)
+                all_logits.append(outputs.logits.cpu().numpy())
+        return np.concatenate(all_logits, axis=0)
+
+
 def _normalize_game_name(name: str) -> str:
     """Normalize game name for matching: lowercase, strip punctuation, collapse whitespace."""
     name = str(name).lower().strip()
     name = re.sub(r"[^a-z0-9\s]", "", name)
     name = re.sub(r"\s+", " ", name).strip()
     return name
+
+
+def _format_feature_name(col: str) -> str:
+    """Human-readable label for a metadata feature column."""
+    if col.startswith("genre_"):
+        return "Genre: " + col[len("genre_"):].replace("_", " ").title()
+    if col.startswith("tag_"):
+        return "Tag: " + col[len("tag_"):].replace("_", " ").title()
+    return col.replace("_", " ").title()
+
+
+def _partial_spearman(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> Tuple[float, float, int]:
+    """Spearman ρ(x, y | z) via rank residualization.
+
+    Addresses the studio-capability / engagement-volume confound: if a feature's
+    raw correlation with revenue is driven by review volume, partialling out
+    log_ea_review_count will attenuate it toward zero.
+    """
+    mask = ~(np.isnan(x) | np.isnan(y) | np.isnan(z))
+    n = int(mask.sum())
+    if n < 4:
+        return float("nan"), float("nan"), n
+    rx = pd.Series(x[mask]).rank().to_numpy()
+    ry = pd.Series(y[mask]).rank().to_numpy()
+    rz = pd.Series(z[mask]).rank().to_numpy()
+    if np.std(rz) == 0:
+        r, p = pearsonr(rx, ry)
+        return float(r), float(p), n
+    Z = np.column_stack([np.ones_like(rz), rz])
+    beta_x, *_ = np.linalg.lstsq(Z, rx, rcond=None)
+    beta_y, *_ = np.linalg.lstsq(Z, ry, rcond=None)
+    resid_x = rx - Z @ beta_x
+    resid_y = ry - Z @ beta_y
+    if np.std(resid_x) == 0 or np.std(resid_y) == 0:
+        return float("nan"), float("nan"), n
+    r, p = pearsonr(resid_x, resid_y)
+    return float(r), float(p), n
 
 
 SUCCESS_METRICS_FILE = Path("data/game_success_metrics.csv")
@@ -41,46 +157,107 @@ class ThesisValidator:
     def __init__(self, path_config: PathConfig):
         self.path_config = path_config
 
-    def load_best_model(
+    def load_predictor(
         self,
         model_name: Optional[str] = None,
         seed: Optional[int] = None,
         fold: int = 0,
-    ) -> Tuple[Any, Any, str]:
+    ) -> SentimentPredictor:
         models_dir = self.path_config.models_dir
 
-        candidates = (
-            [model_name]
-            if model_name
-            else ["LogisticRegression", "LightGBM", "SVM", "XGBoost", "NaiveBayes"]
-        )
+        if model_name:
+            candidates = [model_name]
+        else:
+            candidates = TRANSFORMER_MODEL_NAMES + CLASSICAL_MODEL_NAMES
 
         for name in candidates:
-            if name is None:
-                continue
-
-            if seed is not None:
-                model_path = models_dir / f"{name}_seed{seed}_fold{fold}.joblib"
-                if model_path.exists():
-                    data = joblib.load(model_path)
-                    print(f"Loaded model: {name} (seed={seed}, fold={fold})")
-                    return data["model"], data["tfidf"], name
+            if name in TRANSFORMER_MODEL_NAMES:
+                predictor = self._load_transformer(models_dir, name, seed, fold)
+                if predictor is not None:
+                    return predictor
+            elif name in CLASSICAL_MODEL_NAMES:
+                predictor = self._load_classical(models_dir, name, seed, fold)
+                if predictor is not None:
+                    return predictor
             else:
-                import glob
-
-                pattern = str(models_dir / f"{name}_seed*_fold{fold}.joblib")
-                matching_files = glob.glob(pattern)
-                if matching_files:
-                    model_path = Path(matching_files[0])
-                    data = joblib.load(model_path)
-                    filename = model_path.stem
-                    detected_seed = filename.split("_seed")[1].split("_fold")[0]
-                    print(f"Loaded model: {name} (seed={detected_seed}, fold={fold})")
-                    return data["model"], data["tfidf"], name
+                raise ValueError(
+                    f"Unknown model name '{name}'. "
+                    f"Available: {TRANSFORMER_MODEL_NAMES + CLASSICAL_MODEL_NAMES}"
+                )
 
         raise FileNotFoundError(
-            f"No trained model found in {models_dir}. "
-            "Please train classical models first."
+            f"No trained model found in {models_dir} matching {candidates}. "
+            "Train models first (python main.py)."
+        )
+
+    def _load_classical(
+        self,
+        models_dir: Path,
+        name: str,
+        seed: Optional[int],
+        fold: int,
+    ) -> Optional[SentimentPredictor]:
+        if seed is not None:
+            path = models_dir / f"{name}_seed{seed}_fold{fold}.joblib"
+            if not path.exists():
+                return None
+            matched_seed = seed
+        else:
+            matches = sorted(models_dir.glob(f"{name}_seed*_fold{fold}.joblib"))
+            if not matches:
+                return None
+            path = matches[0]
+            matched_seed = path.stem.split("_seed")[1].split("_fold")[0]
+
+        data = joblib.load(path)
+        print(f"Loaded model: {name} (seed={matched_seed}, fold={fold})")
+        return SentimentPredictor(
+            name=name,
+            kind="classical",
+            model=data["model"],
+            tfidf=data["tfidf"],
+        )
+
+    def _load_transformer(
+        self,
+        models_dir: Path,
+        name: str,
+        seed: Optional[int],
+        fold: int,
+    ) -> Optional[SentimentPredictor]:
+        if seed is not None:
+            path = models_dir / f"{name}_seed{seed}_fold{fold}"
+            if not (path / "config.json").exists():
+                return None
+            matched_seed = seed
+        else:
+            matches = sorted(
+                p for p in models_dir.glob(f"{name}_seed*_fold{fold}")
+                if (p / "config.json").exists()
+            )
+            if not matches:
+                return None
+            path = matches[0]
+            matched_seed = path.name.split("_seed")[1].split("_fold")[0]
+
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+        from ..config import DeviceConfig, TrainingConfig
+
+        device = DeviceConfig.get_device()
+        tokenizer = AutoTokenizer.from_pretrained(str(path))
+        model = AutoModelForSequenceClassification.from_pretrained(
+            str(path), use_safetensors=True
+        ).to(device)
+
+        print(f"Loaded model: {name} (seed={matched_seed}, fold={fold}) on {device}")
+        return SentimentPredictor(
+            name=name,
+            kind="transformer",
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            max_length=TrainingConfig().transformer_max_length,
         )
 
     def load_validation_data(self, min_text_length: int = 10) -> pd.DataFrame:
@@ -173,8 +350,7 @@ class ThesisValidator:
     def calculate_game_sentiment(
         self,
         df: pd.DataFrame,
-        model: Any,
-        tfidf: Any,
+        predictor: SentimentPredictor,
     ) -> pd.DataFrame:
         print("\nCalculating game-level sentiment scores...")
 
@@ -197,16 +373,10 @@ class ThesisValidator:
             )
             texts = game_reviews[text_col].values
 
-            X_tfidf = tfidf.transform(texts)
-            predictions = model.predict(X_tfidf)
-
-            if hasattr(model, "predict_proba"):
-                proba = model.predict_proba(X_tfidf)
-                avg_positive_prob = proba[:, 1].mean()
-                positive_probs = proba[:, 1]
-            else:
-                avg_positive_prob = predictions.mean()
-                positive_probs = predictions.astype(float)
+            proba = predictor.predict_proba(texts)
+            positive_probs = proba[:, 1]
+            predictions = np.argmax(proba, axis=-1)
+            avg_positive_prob = positive_probs.mean()
 
             positive_ratio = predictions.mean()
             total_reviews = len(game_reviews)
@@ -452,12 +622,27 @@ class ThesisValidator:
                 spearman_r, spearman_p = spearmanr(x, y)
                 pearson_r, pearson_p = pearsonr(x, y)
 
+                partial_r = partial_p = None
+                control_var = None
+                if metric_col in ("estimated_revenue_usd", "owners_midpoint",
+                                  "steamspy_owners_min") \
+                        and feat_col != "log_ea_review_count" \
+                        and "log_ea_review_count" in merged.columns:
+                    z = merged["log_ea_review_count"][valid_mask].values
+                    p_r, p_p, _ = _partial_spearman(x, y, z)
+                    if not np.isnan(p_r):
+                        partial_r, partial_p = p_r, p_p
+                        control_var = "log_ea_review_count"
+
                 result = CorrelationResult(
                     spearman_r=spearman_r,
                     spearman_p=spearman_p,
                     pearson_r=pearson_r,
                     pearson_p=pearson_p,
                     n_samples=n_valid,
+                    partial_r=partial_r,
+                    partial_p=partial_p,
+                    control_var=control_var,
                 )
                 key = f"{feat_name} → {metric_name}"
                 results[key] = result
@@ -466,6 +651,168 @@ class ThesisValidator:
                 print(
                     f"  {key}: r={spearman_r:.3f}, p={spearman_p:.4f}, n={n_valid} {sig}"
                 )
+
+        return results
+
+    def correlate_metadata_with_success(
+        self,
+        game_sentiment: pd.DataFrame,
+        success_metrics: pd.DataFrame,
+    ) -> Dict[str, CorrelationResult]:
+        """Spearman correlations between game metadata features and market outcomes.
+
+        Parses genre flags, tag flags, price tier, release year, platform support, etc.
+        from `game_metadata.csv` and `game_success_metrics.csv`, then correlates each
+        metadata feature against each market-success target. Only features with at least
+        MIN_VARIANCE non-constant values are included (binary flags with ≤1 positive
+        case are skipped).
+        """
+        from .success_predictor import (
+            GENRE_FLAGS,
+            TAG_FLAGS,
+            METADATA_FEATURES,
+            _enrich_metadata_features,
+            _load_game_metadata_for,
+        )
+        from scipy.stats import spearmanr, pearsonr
+        import numpy as np
+        import pandas as pd
+        from .statistical_tests import CorrelationResult
+        from ..config import PathConfig
+
+        if "app_id" in game_sentiment.columns and "app_id" in success_metrics.columns:
+            merged = game_sentiment.merge(
+                success_metrics, on="app_id", how="inner", suffixes=("", "_metrics")
+            )
+        else:
+            gs = game_sentiment.copy()
+            sm = success_metrics.copy()
+            gs["name_normalized"] = gs["game_name"].apply(_normalize_game_name)
+            sm["name_normalized"] = sm["app_name"].apply(_normalize_game_name)
+            merged = gs.merge(sm, on="name_normalized", how="inner", suffixes=("", "_metrics"))
+
+        meta_df = _load_game_metadata_for(merged)
+        if meta_df is not None:
+            if "app_id" in merged.columns and "app_id" in meta_df.columns:
+                merged = merged.merge(meta_df, on="app_id", how="left", suffixes=("", "_meta"))
+            else:
+                merged = merged.copy()
+                if "name_normalized" not in merged.columns:
+                    merged["name_normalized"] = merged.get(
+                        "game_name", merged.get("app_name")
+                    ).apply(_normalize_game_name)
+                meta_df = meta_df.copy()
+                meta_df["name_normalized"] = meta_df["app_name"].apply(_normalize_game_name)
+                merged = merged.merge(
+                    meta_df.drop(columns=["app_id"], errors="ignore"),
+                    on="name_normalized",
+                    how="left",
+                    suffixes=("", "_meta"),
+                )
+
+        merged = _enrich_metadata_features(merged)
+
+        if "steamspy_owners_min" in merged.columns and "steamspy_owners_max" in merged.columns:
+            merged["owners_midpoint"] = (
+                merged["steamspy_owners_min"] + merged["steamspy_owners_max"]
+            ) / 2
+
+        if "ea_review_count" in merged.columns and "log_ea_review_count" not in merged.columns:
+            merged["log_ea_review_count"] = np.log1p(
+                pd.to_numeric(merged["ea_review_count"], errors="coerce")
+            )
+
+        if len(merged) < 5:
+            print("WARNING: Not enough matched games for metadata correlation analysis!")
+            return {}
+
+        print(f"\nRunning metadata correlations on {len(merged)} games")
+
+        success_metrics_config = [
+            ("owners_midpoint", "Estimated Sales (Owners)"),
+            ("steamspy_owners_min", "Owner Estimate (Min)"),
+            ("steam_metacritic_score", "Metacritic Score"),
+            ("steamspy_avg_playtime", "Average Playtime"),
+            ("review_score", "Review Score (Positive Ratio)"),
+            ("estimated_revenue_usd", "Estimated Revenue"),
+        ]
+
+        # Only keep metadata features actually present in the merge AND with enough
+        # variation to produce a meaningful correlation.
+        metadata_feats = []
+        for col in METADATA_FEATURES:
+            if col not in merged.columns:
+                continue
+            series = pd.to_numeric(merged[col], errors="coerce")
+            nonnull = series.dropna()
+            if len(nonnull) < 5:
+                continue
+            # Binary flags: require ≥2 positives AND ≥2 negatives
+            unique_vals = nonnull.unique()
+            if set(unique_vals).issubset({0, 1}):
+                if nonnull.sum() < 2 or (len(nonnull) - nonnull.sum()) < 2:
+                    continue
+            else:
+                if nonnull.nunique() < 2:
+                    continue
+            metadata_feats.append((col, _format_feature_name(col)))
+
+        results: Dict[str, CorrelationResult] = {}
+
+        for metric_col, metric_name in success_metrics_config:
+            if metric_col not in merged.columns:
+                continue
+
+            for feat_col, feat_name in metadata_feats:
+                x_raw = pd.to_numeric(merged[feat_col], errors="coerce")
+                y_raw = pd.to_numeric(merged[metric_col], errors="coerce")
+                valid_mask = x_raw.notna() & y_raw.notna()
+                n_valid = int(valid_mask.sum())
+                if n_valid < 5:
+                    continue
+
+                x = x_raw[valid_mask].values
+                y = y_raw[valid_mask].values
+                if np.std(x) == 0 or np.std(y) == 0:
+                    continue
+
+                spearman_r, spearman_p = spearmanr(x, y)
+                pearson_r, pearson_p = pearsonr(x, y)
+                if not np.isfinite(spearman_r) or not np.isfinite(pearson_r):
+                    continue
+
+                partial_r = partial_p = None
+                control_var = None
+                if metric_col in ("estimated_revenue_usd", "owners_midpoint",
+                                  "steamspy_owners_min") \
+                        and "log_ea_review_count" in merged.columns:
+                    z_raw = pd.to_numeric(merged["log_ea_review_count"], errors="coerce")
+                    z = z_raw[valid_mask].values
+                    p_r, p_p, _ = _partial_spearman(x, y, z)
+                    if not np.isnan(p_r):
+                        partial_r, partial_p = p_r, p_p
+                        control_var = "log_ea_review_count"
+
+                key = f"{feat_name} → {metric_name}"
+                results[key] = CorrelationResult(
+                    spearman_r=float(spearman_r),
+                    spearman_p=float(spearman_p),
+                    pearson_r=float(pearson_r),
+                    pearson_p=float(pearson_p),
+                    n_samples=n_valid,
+                    partial_r=partial_r,
+                    partial_p=partial_p,
+                    control_var=control_var,
+                )
+
+                if spearman_p < 0.05:
+                    print(
+                        f"  {key}: ρ={spearman_r:+.3f}, p={spearman_p:.4f}, n={n_valid}  ***"
+                    )
+
+        print(f"\nMetadata correlations: {len(results)} feature×target pairs evaluated")
+        sig_count = sum(1 for r in results.values() if r.is_significant)
+        print(f"  Significant (p<0.05): {sig_count}")
 
         return results
 
@@ -496,13 +843,13 @@ class ThesisValidator:
         results = {}
 
         try:
-            model, tfidf, loaded_model_name = self.load_best_model(model_name)
-            results["model_name"] = loaded_model_name
+            predictor = self.load_predictor(model_name)
+            results["model_name"] = predictor.name
         except FileNotFoundError as e:
             print(f"Error: {e}")
             return results
 
-        game_sentiment = self.calculate_game_sentiment(df, model, tfidf)
+        game_sentiment = self.calculate_game_sentiment(df, predictor)
         results["game_sentiment"] = game_sentiment
 
         print("\n" + "-" * 40)
@@ -526,11 +873,62 @@ class ThesisValidator:
             results["success_correlations"] = success_correlations
             results["success_metrics"] = success_metrics
 
+            print("\n" + "-" * 40)
+            print("3. CORRELATION WITH GAME METADATA FEATURES")
+            print("-" * 40)
+            metadata_correlations = self.correlate_metadata_with_success(
+                game_sentiment, success_metrics
+            )
+            results["metadata_correlations"] = metadata_correlations
+
         self._save_extended_results(results)
 
         self._print_extended_summary(results)
 
         return results
+
+    def _save_metadata_correlations(
+        self,
+        metadata_correlations: Dict[str, "CorrelationResult"],
+        output_path: Path,
+    ):
+        """Write metadata correlation results to CSV, sorted by |spearman_r|."""
+        rows = []
+        for name, corr in metadata_correlations.items():
+            feat, target = name.split(" → ", 1) if " → " in name else (name, "")
+            rows.append(
+                {
+                    "feature": feat,
+                    "target": target,
+                    "spearman_r": corr.spearman_r,
+                    "spearman_p": corr.spearman_p,
+                    "pearson_r": corr.pearson_r,
+                    "pearson_p": corr.pearson_p,
+                    "partial_r": corr.partial_r,
+                    "partial_p": corr.partial_p,
+                    "control_var": corr.control_var,
+                    "n_samples": corr.n_samples,
+                    "effect_size": corr.effect_size,
+                    "significant": corr.is_significant,
+                    "abs_spearman_r": abs(corr.spearman_r),
+                }
+            )
+        if not rows:
+            return
+        df = pd.DataFrame(rows).sort_values(
+            ["significant", "abs_spearman_r"], ascending=[False, False]
+        )
+        df = df.drop(columns=["abs_spearman_r"])
+        df.to_csv(output_path, index=False)
+        print(f"\nMetadata correlations saved to {output_path}")
+        sig = df[df["significant"]]
+        if len(sig) > 0:
+            print(f"\nTop significant metadata correlations ({len(sig)} total):")
+            for _, r in sig.head(15).iterrows():
+                print(
+                    f"  {r['feature']} → {r['target']}: "
+                    f"ρ={r['spearman_r']:+.3f}, p={r['spearman_p']:.4f}, n={r['n_samples']}"
+                )
 
     def _save_extended_results(self, results: Dict):
         metrics_dir = self.path_config.metrics_dir
@@ -580,6 +978,12 @@ class ThesisValidator:
 
             all_correlations.to_csv(
                 metrics_dir / "success_correlations.csv", index=False
+            )
+
+        if results.get("metadata_correlations"):
+            self._save_metadata_correlations(
+                results["metadata_correlations"],
+                metrics_dir / "metadata_correlations.csv",
             )
 
         summary = {
@@ -677,8 +1081,7 @@ class ThesisValidator:
         self,
         df: pd.DataFrame,
         game_sentiment: pd.DataFrame,
-        model: Any,
-        tfidf: Any,
+        predictor: SentimentPredictor,
     ) -> Dict:
         """Evaluate how accurately the model predicts sentiment on validation games.
 
@@ -702,9 +1105,8 @@ class ThesisValidator:
         text_col = "cleaned_text" if "cleaned_text" in ea_reviews.columns else "review_text"
 
         # Per-review predictions across all validation games
-        X_all = tfidf.transform(ea_reviews[text_col].values)
         y_true_all = ea_reviews["positive"].values
-        y_pred_all = model.predict(X_all)
+        y_pred_all = predictor.predict(ea_reviews[text_col].values)
 
         overall_accuracy = accuracy_score(y_true_all, y_pred_all)
         overall_f1 = f1_score(y_true_all, y_pred_all, average="weighted")
@@ -717,9 +1119,8 @@ class ThesisValidator:
             if len(game_reviews) == 0:
                 continue
 
-            X_game = tfidf.transform(game_reviews[text_col].values)
             y_true = game_reviews["positive"].values
-            y_pred = model.predict(X_game)
+            y_pred = predictor.predict(game_reviews[text_col].values)
 
             game_accuracy = accuracy_score(y_true, y_pred)
             game_f1 = f1_score(y_true, y_pred, average="weighted")
@@ -791,9 +1192,9 @@ class ThesisValidator:
         results["validation_type"] = "unseen_games"
 
         try:
-            model, tfidf, loaded_model_name = self.load_best_model(model_name)
-            results["model_name"] = loaded_model_name
-            print(f"Loaded model: {loaded_model_name}")
+            predictor = self.load_predictor(model_name)
+            results["model_name"] = predictor.name
+            print(f"Loaded model: {predictor.name}")
         except FileNotFoundError as e:
             print(f"Error: {e}")
             return results
@@ -808,14 +1209,14 @@ class ThesisValidator:
         print("\n" + "-" * 40)
         print("1. PREDICTING EA SENTIMENT ON NEW GAMES")
         print("-" * 40)
-        game_sentiment = self.calculate_game_sentiment(validation_df, model, tfidf)
+        game_sentiment = self.calculate_game_sentiment(validation_df, predictor)
         results["game_sentiment"] = game_sentiment
 
         print("\n" + "-" * 40)
         print("1.5. PREDICTION ACCURACY EVALUATION")
         print("-" * 40)
         accuracy_results = self.evaluate_prediction_accuracy(
-            validation_df, game_sentiment, model, tfidf
+            validation_df, game_sentiment, predictor
         )
         results["prediction_accuracy"] = accuracy_results
 
@@ -876,6 +1277,14 @@ class ThesisValidator:
             )
             results["success_correlations"] = success_correlations
             results["success_metrics"] = success_metrics
+
+            print("\n" + "-" * 40)
+            print("4. CORRELATION WITH GAME METADATA FEATURES")
+            print("-" * 40)
+            metadata_correlations = self.correlate_metadata_with_success(
+                game_sentiment, success_metrics
+            )
+            results["metadata_correlations"] = metadata_correlations
         else:
             print("\nNo success metrics available.")
             print("Run 'python main.py --gather-success-metrics' for validation games.")
@@ -918,6 +1327,9 @@ class ThesisValidator:
                         "spearman_p": corr.spearman_p,
                         "pearson_r": corr.pearson_r,
                         "pearson_p": corr.pearson_p,
+                        "partial_r": corr.partial_r,
+                        "partial_p": corr.partial_p,
+                        "control_var": corr.control_var,
                         "n_samples": corr.n_samples,
                         "effect_size": corr.effect_size,
                         "significant": corr.is_significant,
@@ -927,6 +1339,12 @@ class ThesisValidator:
         if rows:
             pd.DataFrame(rows).to_csv(
                 metrics_dir / "validation_correlations.csv", index=False
+            )
+
+        if results.get("metadata_correlations"):
+            self._save_metadata_correlations(
+                results["metadata_correlations"],
+                metrics_dir / "validation_metadata_correlations.csv",
             )
 
         summary = {

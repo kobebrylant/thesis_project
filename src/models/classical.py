@@ -58,6 +58,12 @@ class ClassicalModel(BaseModel):
 
         self._model = self._create_model()
 
+        if self.name == "XGBoost":
+            n_pos = int((y_train == 1).sum())
+            n_neg = int((y_train == 0).sum())
+            if n_pos > 0:
+                self._model.set_params(scale_pos_weight=n_neg / n_pos)
+
         train_start = time.time()
         self._model.fit(X_train_tfidf, y_train)
         train_time = time.time() - train_start
